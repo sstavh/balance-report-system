@@ -4,42 +4,43 @@ import sqlite3
 import csv
 from pathlib import Path
 
-DB_NAME = "balance_report_full.db"
+DB_NAME = "balance_report_p4.db"
 
 FORM_1_ROWS = [
     ("1000", "Нематеріальні активи"),
-    ("1001", "первісна вартість"),
-    ("1002", "накопичена амортизація"),
-    ("1010", "Основні засоби"),
-    ("1011", "первісна вартість"),
-    ("1012", "знос"),
     ("1095", "Усього за розділом I"),
     ("1100", "Запаси"),
+    ("1125", "Дебіторська заборгованість за продукцію"),
+    ("1155", "Інша поточна дебіторська заборгованість"),
+    ("1160", "Поточні фінансові інвестиції"),
+    ("1165", "Гроші та їх еквіваленти"),
     ("1195", "Усього за розділом II"),
     ("1300", "Баланс (Актив)"),
     ("1400", "Зареєстрований капітал"),
     ("1495", "Усього за розділом I (Пасив)"),
+    ("1525", "Цільове фінансування"),
+    ("1595", "Усього за розділом II (Довгострокові зобов'язання)"),
+    ("1695", "Усього за розділом III (Поточні зобов'язання)"),
     ("1900", "Баланс (Пасив)")
 ]
 
 FORM_2_ROWS = [
     ("2000", "Чистий дохід від реалізації продукції"),
-    ("2050", "Валовий прибуток"),
-    ("2055", "Валовий збиток"),
-    ("2130", "Адміністративні витрати"),
-    ("2290", "Фінансовий результат до оподаткування: прибуток"),
-    ("2295", "Фінансовий результат до оподаткування: збиток"),
     ("2350", "Чистий фінансовий результат: прибуток"),
-    ("2355", "Чистий фінансовий результат: збиток")
+    ("2500", "Матеріальні затрати"),
+    ("2505", "Витрати на оплату праці"),
+    ("2510", "Відрахування на соціальні заходи"),
+    ("2515", "Амортизація"),
+    ("2520", "Інші операційні витрати")
 ]
 
 EXTRA_LABELS = [
     "V17 — Термін існування підприємства, років",
     "V18 — Градація аналізу прибутків та збитків (0; 5]",
-    "V19 — Найбільша сума кредиту, Sk",
+    "V19 — Найбільша сума отриманого і повернутого кредиту, Sk",
     "V20 — Сума запитуваного кредиту, S",
-    "V21 — Власні кошти в інвестицію, K",
-    "V22 — Вартість ліквідного майна, M"
+    "V21 — Кількість власних коштів в інвестицію, K",
+    "V22 — Вартість власного ліквідного майна, M"
 ]
 
 save_status = {
@@ -52,13 +53,14 @@ save_status = {
 class BalanceReportApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Фінансова звітність підприємства")
-        self.root.geometry("1040x720")
+        self.root.title("Розрахунок показників платоспроможності")
+        self.root.geometry("1100x760")
         self.root.configure(bg="#edf2f7")
 
         self.entries_f1 = {}
         self.entries_f2 = {}
         self.extra_entries = []
+        self.results = []
 
         self.init_db()
         self.setup_style()
@@ -77,11 +79,21 @@ class BalanceReportApp:
 
         style.configure("TNotebook.Tab", font=("Arial", 10, "bold"), padding=(18, 10))
 
-        style.configure("Accent.TButton", font=("Arial", 10, "bold"), padding=(14, 8),
-                        background="#2563eb", foreground="white")
+        style.configure(
+            "Accent.TButton",
+            font=("Arial", 10, "bold"),
+            padding=(14, 8),
+            background="#2563eb",
+            foreground="white"
+        )
 
-        style.configure("Success.TButton", font=("Arial", 10, "bold"), padding=(14, 8),
-                        background="#16a34a", foreground="white")
+        style.configure(
+            "Success.TButton",
+            font=("Arial", 10, "bold"),
+            padding=(14, 8),
+            background="#16a34a",
+            foreground="white"
+        )
 
         style.configure("Treeview", font=("Arial", 10), rowheight=28)
         style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
@@ -95,20 +107,20 @@ class BalanceReportApp:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 form_type TEXT,
                 row_code TEXT,
-                col1 TEXT,
-                col2 TEXT
+                col1 REAL,
+                col2 REAL
             )
         """)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS additional_info (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                v17 TEXT,
-                v18 TEXT,
-                v19 TEXT,
-                v20 TEXT,
-                v21 TEXT,
-                v22 TEXT
+                v17 REAL,
+                v18 REAL,
+                v19 REAL,
+                v20 REAL,
+                v21 REAL,
+                v22 REAL
             )
         """)
 
@@ -127,6 +139,7 @@ class BalanceReportApp:
         self.build_form1_tab()
         self.build_form2_tab()
         self.build_extra_tab()
+        self.build_results_tab()
         self.build_bottom_bar(main)
 
     def build_header(self):
@@ -136,13 +149,13 @@ class BalanceReportApp:
 
         ttk.Label(
             header,
-            text="Введення та друк балансових звітів",
+            text="Розрахунок фінансових показників підприємства",
             style="Header.TLabel"
         ).pack(anchor="w", padx=24, pady=(16, 0))
 
         ttk.Label(
             header,
-            text="Форма №1 «Баланс» та Форма №2 «Звіт про фінансові результати»",
+            text="Показники платоспроможності K1–K11 на основі Форми №1, Форми №2 та V17–V22",
             style="SubHeader.TLabel"
         ).pack(anchor="w", padx=26, pady=(4, 0))
 
@@ -152,7 +165,7 @@ class BalanceReportApp:
 
         self.status_label = ttk.Label(
             bottom,
-            text="Збережіть усі вкладки, щоб активувати попередній перегляд",
+            text="Збережіть Форму №1, Форму №2 та додаткові показники",
             background="#edf2f7",
             foreground="#64748b",
             font=("Arial", 10)
@@ -166,14 +179,14 @@ class BalanceReportApp:
             command=self.test_database_and_export
         ).pack(side="right", padx=8)
 
-        self.btn_show_tables = ttk.Button(
+        self.btn_calculate = ttk.Button(
             bottom,
-            text="Попередній перегляд / друк",
+            text="Розрахувати K1–K11",
             style="Success.TButton",
-            command=self.show_preview_window,
+            command=self.calculate_indicators,
             state="disabled"
         )
-        self.btn_show_tables.pack(side="right")
+        self.btn_calculate.pack(side="right")
 
     def create_scrollable_card(self, parent):
         outer = ttk.Frame(parent, style="Card.TFrame", padding=14)
@@ -217,14 +230,16 @@ class BalanceReportApp:
                 row=i, column=0, padx=3, pady=4
             )
 
-            ttk.Label(parent, text=name, background="#ffffff", width=48).grid(
+            ttk.Label(parent, text=name, background="#ffffff", width=55).grid(
                 row=i, column=1, padx=3, pady=4, sticky="w"
             )
 
             ent1 = ttk.Entry(parent, width=20, justify="center")
+            ent1.insert(0, "0")
             ent1.grid(row=i, column=2, padx=3, pady=4)
 
             ent2 = ttk.Entry(parent, width=20, justify="center")
+            ent2.insert(0, "0")
             ent2.grid(row=i, column=3, padx=3, pady=4)
 
             entries[code] = (ent1, ent2, name)
@@ -272,8 +287,8 @@ class BalanceReportApp:
         self.entries_f2 = self.build_form_grid(
             card,
             FORM_2_ROWS,
-            "За звітний період",
-            "За аналогічний період"
+            "За аналогічний період",
+            "За звітний період"
         )
 
         ttk.Button(
@@ -301,10 +316,11 @@ class BalanceReportApp:
                 card,
                 text=text,
                 style="Text.TLabel",
-                width=64
+                width=70
             ).grid(row=i, column=0, padx=(0, 16), pady=9, sticky="w")
 
             ent = ttk.Entry(card, width=32, justify="center")
+            ent.insert(0, "1")
             ent.grid(row=i, column=1, pady=9)
 
             self.extra_entries.append(ent)
@@ -316,15 +332,70 @@ class BalanceReportApp:
             command=self.save_extra
         ).grid(row=8, column=0, columnspan=2, pady=24)
 
+    def build_results_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Фінансові показники")
+
+        card = ttk.Frame(tab, style="Card.TFrame", padding=14)
+        card.pack(expand=True, fill="both", padx=10, pady=10)
+
+        ttk.Label(
+            card,
+            text="Результати розрахунку показників платоспроможності",
+            style="Title.TLabel"
+        ).pack(anchor="w", pady=(0, 12))
+
+        self.tree_res = ttk.Treeview(
+            card,
+            columns=("Group", "Indicator", "Formula", "Value"),
+            show="headings",
+            height=16
+        )
+
+        self.tree_res.heading("Group", text="Група")
+        self.tree_res.heading("Indicator", text="Показник")
+        self.tree_res.heading("Formula", text="Формула")
+        self.tree_res.heading("Value", text="Значення")
+
+        self.tree_res.column("Group", width=70, anchor="center")
+        self.tree_res.column("Indicator", width=360)
+        self.tree_res.column("Formula", width=310)
+        self.tree_res.column("Value", width=140, anchor="center")
+
+        self.tree_res.pack(expand=True, fill="both")
+
+        btn_frame = ttk.Frame(card, style="Card.TFrame")
+        btn_frame.pack(fill="x", pady=12)
+
+        ttk.Button(
+            btn_frame,
+            text="Розрахувати показники",
+            style="Success.TButton",
+            command=self.calculate_indicators
+        ).pack(side="left")
+
+        ttk.Button(
+            btn_frame,
+            text="Експорт результатів у CSV",
+            style="Accent.TButton",
+            command=self.export_results
+        ).pack(side="right")
+
     def check_all_saved(self):
         if all(save_status.values()):
-            self.btn_show_tables.config(state="normal")
+            self.btn_calculate.config(state="normal")
             self.status_label.config(
-                text="Усі дані збережено. Можна переглянути та експортувати звіт.",
+                text="Усі дані збережено. Можна розрахувати фінансові показники.",
                 foreground="#16a34a"
             )
         else:
-            self.btn_show_tables.config(state="disabled")
+            self.btn_calculate.config(state="disabled")
+
+    def to_float(self, value):
+        try:
+            return float(str(value).replace(",", "."))
+        except ValueError:
+            return None
 
     def save_data(self, form_type, entries_dict):
         conn = sqlite3.connect(DB_NAME)
@@ -333,14 +404,18 @@ class BalanceReportApp:
         cursor.execute("DELETE FROM form_data WHERE form_type = ?", (form_type,))
 
         for code, (ent1, ent2, name) in entries_dict.items():
-            val1 = ent1.get().strip()
-            val2 = ent2.get().strip()
+            val1 = self.to_float(ent1.get().strip())
+            val2 = self.to_float(ent2.get().strip())
 
-            if val1 or val2:
-                cursor.execute("""
-                    INSERT INTO form_data (form_type, row_code, col1, col2)
-                    VALUES (?, ?, ?, ?)
-                """, (form_type, code, val1, val2))
+            if val1 is None or val2 is None:
+                conn.close()
+                messagebox.showerror("Помилка", f"Некоректне число у рядку {code}.")
+                return
+
+            cursor.execute("""
+                INSERT INTO form_data (form_type, row_code, col1, col2)
+                VALUES (?, ?, ?, ?)
+            """, (form_type, code, val1, val2))
 
         conn.commit()
         conn.close()
@@ -351,6 +426,15 @@ class BalanceReportApp:
         messagebox.showinfo("Збережено", f"Дані для {form_type} успішно збережено.")
 
     def save_extra(self):
+        values = []
+
+        for entry in self.extra_entries:
+            value = self.to_float(entry.get().strip())
+            if value is None:
+                messagebox.showerror("Помилка", "У додаткових показниках можна вводити тільки числа.")
+                return
+            values.append(value)
+
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
@@ -359,7 +443,7 @@ class BalanceReportApp:
         cursor.execute("""
             INSERT INTO additional_info (v17, v18, v19, v20, v21, v22)
             VALUES (?, ?, ?, ?, ?, ?)
-        """, [entry.get().strip() for entry in self.extra_entries])
+        """, values)
 
         conn.commit()
         conn.close()
@@ -369,122 +453,114 @@ class BalanceReportApp:
 
         messagebox.showinfo("Збережено", "Додаткову інформацію успішно збережено.")
 
-    def export_csv(self):
+    def get_val(self, cursor, form_type, row_code):
+        cursor.execute(
+            "SELECT col2 FROM form_data WHERE form_type = ? AND row_code = ?",
+            (form_type, row_code)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+    def safe_div(self, numerator, denominator):
+        if denominator == 0:
+            return "Ділення на 0"
+        return round(numerator / denominator, 4)
+
+    def calculate_indicators(self):
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
+        cursor.execute("SELECT v17, v18, v19, v20, v21, v22 FROM additional_info")
+        extra = cursor.fetchone()
+
+        if not extra:
+            conn.close()
+            messagebox.showwarning("Увага", "Спочатку збережіть додаткову інформацію.")
+            return
+
+        v17, v18, v19_sk, v20_s, v21_k, v22_m = extra
+
+        f1_1095 = self.get_val(cursor, "Form1", "1095")
+        f1_1125 = self.get_val(cursor, "Form1", "1125")
+        f1_1155 = self.get_val(cursor, "Form1", "1155")
+        f1_1160 = self.get_val(cursor, "Form1", "1160")
+        f1_1165 = self.get_val(cursor, "Form1", "1165")
+        f1_1195 = self.get_val(cursor, "Form1", "1195")
+        f1_1495 = self.get_val(cursor, "Form1", "1495")
+        f1_1525 = self.get_val(cursor, "Form1", "1525")
+        f1_1595 = self.get_val(cursor, "Form1", "1595")
+        f1_1695 = self.get_val(cursor, "Form1", "1695")
+
+        f2_2350 = self.get_val(cursor, "Form2", "2350")
+        f2_2500 = self.get_val(cursor, "Form2", "2500")
+        f2_2505 = self.get_val(cursor, "Form2", "2505")
+        f2_2510 = self.get_val(cursor, "Form2", "2510")
+        f2_2515 = self.get_val(cursor, "Form2", "2515")
+        f2_2520 = self.get_val(cursor, "Form2", "2520")
+
+        costs = f2_2500 + f2_2505 + f2_2510 + f2_2515 + f2_2520
+
+        k1 = self.safe_div(f1_1160 + f1_1165, f1_1695)
+        k2 = self.safe_div(f1_1125 + f1_1155 + f1_1160 + f1_1165, f1_1695)
+        k3 = self.safe_div(f1_1195, f1_1695)
+        k4 = self.safe_div(f1_1525 + f1_1595 + f1_1695, f1_1495)
+        k5 = self.safe_div(f1_1495 - f1_1095, f1_1495)
+
+        k6 = self.safe_div(f2_2350, costs)
+        k7 = v18
+        k8 = self.safe_div(v19_sk, v20_s)
+
+        k9 = v17
+        k10 = self.safe_div(v21_k, v20_s)
+        k11 = self.safe_div(v22_m, v20_s)
+
+        self.results = [
+            ("G1", "K1 — Коефіцієнт миттєвої ліквідності", "(1160 + 1165) / 1695", k1),
+            ("G1", "K2 — Коефіцієнт поточної ліквідності", "(1125 + 1155 + 1160 + 1165) / 1695", k2),
+            ("G1", "K3 — Коефіцієнт загальної ліквідності", "1195 / 1695", k3),
+            ("G1", "K4 — Коефіцієнт фінансової незалежності", "(1525 + 1595 + 1695) / 1495", k4),
+            ("G1", "K5 — Коефіцієнт маневреності власних коштів", "(1495 - 1095) / 1495", k5),
+
+            ("G2", "K6 — Коефіцієнт рентабельності виробництва", "2350 / (2500 + 2505 + 2510 + 2515 + 2520)", k6),
+            ("G2", "K7 — Коефіцієнт діяльності минулих років", "V18", k7),
+            ("G2", "K8 — Коефіцієнт найбільшої суми повернутого кредиту", "V19 / V20", k8),
+
+            ("G3", "K9 — Термін існування підприємства", "V17", k9),
+            ("G3", "K10 — Питома вага коштів підприємства", "V21 / V20", k10),
+            ("G3", "K11 — Коефіцієнт власного ліквідного майна", "V22 / V20", k11)
+        ]
+
+        for item in self.tree_res.get_children():
+            self.tree_res.delete(item)
+
+        for row in self.results:
+            self.tree_res.insert("", tk.END, values=row)
+
+        conn.close()
+
+        self.notebook.select(3)
+        messagebox.showinfo("Готово", "Фінансові показники K1–K11 успішно розраховано.")
+
+    def export_results(self):
+        if not self.results:
+            messagebox.showwarning("Увага", "Спочатку розрахуйте показники.")
+            return
+
         try:
-            self.write_form_csv(
-                cursor,
-                "Form1",
-                FORM_1_ROWS,
-                "Вивід_Форма_1.csv",
-                ["Код рядка", "Назва статті", "На початок звітного періоду", "На кінець звітного періоду"]
-            )
+            with open("Фінансові_Показники_K1_K11.csv", mode="w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file, delimiter=";")
+                writer.writerow(["Група", "Показник", "Формула", "Значення"])
 
-            self.write_form_csv(
-                cursor,
-                "Form2",
-                FORM_2_ROWS,
-                "Вивід_Форма_2.csv",
-                ["Код рядка", "Назва статті", "За звітний період", "За аналогічний період"]
-            )
+                for row in self.results:
+                    writer.writerow(row)
 
-            messagebox.showinfo("Експорт завершено", "CSV-файли створено у папці з програмою.")
+            messagebox.showinfo(
+                "Експорт завершено",
+                "Результати збережено у файл Фінансові_Показники_K1_K11.csv"
+            )
 
         except Exception as error:
             messagebox.showerror("Помилка експорту", str(error))
-
-        finally:
-            conn.close()
-
-    def write_form_csv(self, cursor, form_type, rows, filename, header):
-        names = {code: name for code, name in rows}
-
-        with open(filename, mode="w", newline="", encoding="utf-8-sig") as file:
-            writer = csv.writer(file, delimiter=";")
-            writer.writerow(header)
-
-            cursor.execute(
-                "SELECT row_code, col1, col2 FROM form_data WHERE form_type = ?",
-                (form_type,)
-            )
-
-            for row_code, col1, col2 in cursor.fetchall():
-                writer.writerow([row_code, names.get(row_code, ""), col1, col2])
-
-    def show_preview_window(self):
-        preview_win = tk.Toplevel(self.root)
-        preview_win.title("Попередній перегляд звіту")
-        preview_win.geometry("980x580")
-        preview_win.configure(bg="#edf2f7")
-
-        ttk.Label(
-            preview_win,
-            text="Попередній перегляд перед друком",
-            background="#edf2f7",
-            foreground="#111827",
-            font=("Arial", 17, "bold")
-        ).pack(anchor="w", padx=20, pady=(18, 8))
-
-        notebook_prev = ttk.Notebook(preview_win)
-        notebook_prev.pack(expand=True, fill="both", padx=20, pady=10)
-
-        self.create_preview_table(
-            notebook_prev,
-            "Форма №1",
-            "Form1",
-            FORM_1_ROWS,
-            ("Code", "Name", "Start", "End"),
-            ("Код", "Назва статті", "На початок", "На кінець")
-        )
-
-        self.create_preview_table(
-            notebook_prev,
-            "Форма №2",
-            "Form2",
-            FORM_2_ROWS,
-            ("Code", "Name", "Period", "PrevPeriod"),
-            ("Код", "Назва статті", "Звітний період", "Аналогічний період")
-        )
-
-        ttk.Button(
-            preview_win,
-            text="Експорт у CSV",
-            style="Success.TButton",
-            command=self.export_csv
-        ).pack(pady=14)
-
-    def create_preview_table(self, notebook, title, form_type, rows, columns, headings):
-        frame = ttk.Frame(notebook, padding=10)
-        notebook.add(frame, text=title)
-
-        tree = ttk.Treeview(frame, columns=columns, show="headings")
-
-        for col, heading in zip(columns, headings):
-            tree.heading(col, text=heading)
-
-        tree.column(columns[0], width=90, anchor="center")
-        tree.column(columns[1], width=440)
-        tree.column(columns[2], width=170, anchor="center")
-        tree.column(columns[3], width=170, anchor="center")
-
-        tree.pack(expand=True, fill="both")
-
-        names = {code: name for code, name in rows}
-
-        conn = sqlite3.connect(DB_NAME)
-        cursor = conn.cursor()
-
-        cursor.execute(
-            "SELECT row_code, col1, col2 FROM form_data WHERE form_type = ?",
-            (form_type,)
-        )
-
-        for row_code, col1, col2 in cursor.fetchall():
-            tree.insert("", tk.END, values=(row_code, names.get(row_code, ""), col1, col2))
-
-        conn.close()
 
     def test_database_and_export(self):
         conn = sqlite3.connect(DB_NAME)
@@ -498,15 +574,13 @@ class BalanceReportApp:
 
         conn.close()
 
-        csv1_exists = Path("Вивід_Форма_1.csv").exists()
-        csv2_exists = Path("Вивід_Форма_2.csv").exists()
+        csv_exists = Path("Фінансові_Показники_K1_K11.csv").exists()
 
         messagebox.showinfo(
             "Тестування програми",
             f"Записів у таблиці form_data: {form_count}\n"
             f"Записів у таблиці additional_info: {extra_count}\n\n"
-            f"CSV Форма №1: {'створено' if csv1_exists else 'не створено'}\n"
-            f"CSV Форма №2: {'створено' if csv2_exists else 'не створено'}"
+            f"CSV з фінансовими показниками: {'створено' if csv_exists else 'не створено'}"
         )
 
 
