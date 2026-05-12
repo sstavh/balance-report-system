@@ -4,7 +4,9 @@ import sqlite3
 import csv
 from pathlib import Path
 
-DB_NAME = "balance_report_p4.db"
+DB_NAME = "creditworthiness_p5.db"
+
+DEFAULT_WEIGHTS = [9, 8, 10, 7, 6, 8, 5, 7, 8, 6, 10]
 
 FORM_1_ROWS = [
     ("1000", "Нематеріальні активи"),
@@ -50,17 +52,20 @@ save_status = {
 }
 
 
-class BalanceReportApp:
+class CreditworthinessApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Розрахунок показників платоспроможності")
-        self.root.geometry("1100x760")
+        self.root.title("Оцінювання кредитоспроможності підприємства")
+        self.root.geometry("1180x780")
         self.root.configure(bg="#edf2f7")
 
         self.entries_f1 = {}
         self.entries_f2 = {}
         self.extra_entries = []
+        self.weight_entries = []
+
         self.results = []
+        self.credit_summary = None
 
         self.init_db()
         self.setup_style()
@@ -124,6 +129,18 @@ class BalanceReportApp:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS credit_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                indicator TEXT,
+                k_value TEXT,
+                membership REAL,
+                weight REAL,
+                normalized_weight REAL,
+                result_part REAL
+            )
+        """)
+
         conn.commit()
         conn.close()
 
@@ -139,6 +156,7 @@ class BalanceReportApp:
         self.build_form1_tab()
         self.build_form2_tab()
         self.build_extra_tab()
+        self.build_weights_tab()
         self.build_results_tab()
         self.build_bottom_bar(main)
 
@@ -149,13 +167,13 @@ class BalanceReportApp:
 
         ttk.Label(
             header,
-            text="Розрахунок фінансових показників підприємства",
+            text="Оцінювання кредитоспроможності підприємства",
             style="Header.TLabel"
         ).pack(anchor="w", padx=24, pady=(16, 0))
 
         ttk.Label(
             header,
-            text="Показники платоспроможності K1–K11 на основі Форми №1, Форми №2 та V17–V22",
+            text="Нечітка модель на основі фінансових показників K1–K11",
             style="SubHeader.TLabel"
         ).pack(anchor="w", padx=26, pady=(4, 0))
 
@@ -165,7 +183,7 @@ class BalanceReportApp:
 
         self.status_label = ttk.Label(
             bottom,
-            text="Збережіть Форму №1, Форму №2 та додаткові показники",
+            text="Збережіть Форму №1, Форму №2 та V17–V22",
             background="#edf2f7",
             foreground="#64748b",
             font=("Arial", 10)
@@ -176,14 +194,14 @@ class BalanceReportApp:
             bottom,
             text="Тестування",
             style="Accent.TButton",
-            command=self.test_database_and_export
+            command=self.test_program
         ).pack(side="right", padx=8)
 
         self.btn_calculate = ttk.Button(
             bottom,
-            text="Розрахувати K1–K11",
+            text="Оцінити кредитоспроможність",
             style="Success.TButton",
-            command=self.calculate_indicators,
+            command=self.calculate_creditworthiness,
             state="disabled"
         )
         self.btn_calculate.pack(side="right")
@@ -211,7 +229,6 @@ class BalanceReportApp:
 
     def build_form_grid(self, parent, rows, col1_name, col2_name):
         entries = {}
-
         headers = ["Код", "Стаття / назва", col1_name, col2_name]
 
         for col, text in enumerate(headers):
@@ -230,7 +247,7 @@ class BalanceReportApp:
                 row=i, column=0, padx=3, pady=4
             )
 
-            ttk.Label(parent, text=name, background="#ffffff", width=55).grid(
+            ttk.Label(parent, text=name, background="#ffffff", width=58).grid(
                 row=i, column=1, padx=3, pady=4, sticky="w"
             )
 
@@ -316,7 +333,7 @@ class BalanceReportApp:
                 card,
                 text=text,
                 style="Text.TLabel",
-                width=70
+                width=74
             ).grid(row=i, column=0, padx=(0, 16), pady=9, sticky="w")
 
             ent = ttk.Entry(card, width=32, justify="center")
@@ -332,46 +349,109 @@ class BalanceReportApp:
             command=self.save_extra
         ).grid(row=8, column=0, columnspan=2, pady=24)
 
+    def build_weights_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Ваги критеріїв")
+
+        card = ttk.Frame(tab, style="Card.TFrame", padding=24)
+        card.pack(fill="both", expand=True, padx=10, pady=10)
+
+        ttk.Label(
+            card,
+            text="Вагові коефіцієнти для K1–K11",
+            style="Title.TLabel"
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 18))
+
+        ttk.Label(card, text="Критерій", background="#dbeafe", foreground="#1e3a8a",
+                  font=("Arial", 10, "bold"), padding=7).grid(row=1, column=0, sticky="ew")
+        ttk.Label(card, text="Назва", background="#dbeafe", foreground="#1e3a8a",
+                  font=("Arial", 10, "bold"), padding=7).grid(row=1, column=1, sticky="ew")
+        ttk.Label(card, text="Вага [1;10]", background="#dbeafe", foreground="#1e3a8a",
+                  font=("Arial", 10, "bold"), padding=7).grid(row=1, column=2, sticky="ew")
+
+        names = [
+            "Коефіцієнт миттєвої ліквідності",
+            "Коефіцієнт поточної ліквідності",
+            "Коефіцієнт загальної ліквідності",
+            "Коефіцієнт фінансової незалежності",
+            "Коефіцієнт маневреності власних коштів",
+            "Коефіцієнт рентабельності виробництва",
+            "Коефіцієнт діяльності минулих років",
+            "Коефіцієнт найбільшої суми повернутого кредиту",
+            "Термін існування підприємства",
+            "Питома вага коштів підприємства",
+            "Коефіцієнт власного ліквідного майна"
+        ]
+
+        for i, name in enumerate(names, start=1):
+            ttk.Label(card, text=f"K{i}", background="#ffffff", width=10).grid(
+                row=i + 1, column=0, padx=3, pady=5
+            )
+
+            ttk.Label(card, text=name, background="#ffffff", width=62).grid(
+                row=i + 1, column=1, padx=3, pady=5, sticky="w"
+            )
+
+            ent = ttk.Entry(card, width=16, justify="center")
+            ent.insert(0, str(DEFAULT_WEIGHTS[i - 1]))
+            ent.grid(row=i + 1, column=2, padx=3, pady=5)
+            self.weight_entries.append(ent)
+
     def build_results_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Фінансові показники")
+        self.notebook.add(tab, text="Кредитоспроможність")
 
         card = ttk.Frame(tab, style="Card.TFrame", padding=14)
         card.pack(expand=True, fill="both", padx=10, pady=10)
 
         ttk.Label(
             card,
-            text="Результати розрахунку показників платоспроможності",
+            text="Результати оцінювання кредитоспроможності",
             style="Title.TLabel"
         ).pack(anchor="w", pady=(0, 12))
 
         self.tree_res = ttk.Treeview(
             card,
-            columns=("Group", "Indicator", "Formula", "Value"),
+            columns=("K", "Indicator", "Value", "Mu", "Weight", "NormWeight", "Part"),
             show="headings",
-            height=16
+            height=14
         )
 
-        self.tree_res.heading("Group", text="Група")
+        self.tree_res.heading("K", text="Критерій")
         self.tree_res.heading("Indicator", text="Показник")
-        self.tree_res.heading("Formula", text="Формула")
-        self.tree_res.heading("Value", text="Значення")
+        self.tree_res.heading("Value", text="K")
+        self.tree_res.heading("Mu", text="μ(K)")
+        self.tree_res.heading("Weight", text="Вага")
+        self.tree_res.heading("NormWeight", text="Норм. вага")
+        self.tree_res.heading("Part", text="Добуток")
 
-        self.tree_res.column("Group", width=70, anchor="center")
+        self.tree_res.column("K", width=70, anchor="center")
         self.tree_res.column("Indicator", width=360)
-        self.tree_res.column("Formula", width=310)
-        self.tree_res.column("Value", width=140, anchor="center")
+        self.tree_res.column("Value", width=90, anchor="center")
+        self.tree_res.column("Mu", width=90, anchor="center")
+        self.tree_res.column("Weight", width=90, anchor="center")
+        self.tree_res.column("NormWeight", width=110, anchor="center")
+        self.tree_res.column("Part", width=100, anchor="center")
 
         self.tree_res.pack(expand=True, fill="both")
 
+        self.summary_label = ttk.Label(
+            card,
+            text="Агрегована оцінка ще не розрахована",
+            background="#ffffff",
+            foreground="#111827",
+            font=("Arial", 12, "bold")
+        )
+        self.summary_label.pack(anchor="w", pady=12)
+
         btn_frame = ttk.Frame(card, style="Card.TFrame")
-        btn_frame.pack(fill="x", pady=12)
+        btn_frame.pack(fill="x", pady=8)
 
         ttk.Button(
             btn_frame,
-            text="Розрахувати показники",
+            text="Розрахувати кредитоспроможність",
             style="Success.TButton",
-            command=self.calculate_indicators
+            command=self.calculate_creditworthiness
         ).pack(side="left")
 
         ttk.Button(
@@ -385,7 +465,7 @@ class BalanceReportApp:
         if all(save_status.values()):
             self.btn_calculate.config(state="normal")
             self.status_label.config(
-                text="Усі дані збережено. Можна розрахувати фінансові показники.",
+                text="Усі дані збережено. Можна оцінити кредитоспроможність.",
                 foreground="#16a34a"
             )
         else:
@@ -463,10 +543,72 @@ class BalanceReportApp:
 
     def safe_div(self, numerator, denominator):
         if denominator == 0:
-            return "Ділення на 0"
+            return 0
         return round(numerator / denominator, 4)
 
-    def calculate_indicators(self):
+    def membership(self, value):
+        if value <= 0:
+            return 0
+        if value >= 1:
+            return 1
+        return round(value, 4)
+
+    def normalize_weights(self, weights):
+        total = sum(weights)
+        if total == 0:
+            return [0 for _ in weights]
+        return [round(w / total, 4) for w in weights]
+
+    def get_rating(self, score):
+        if score > 0.57:
+            return (
+                "І категорія якості",
+                "AAA / AA",
+                "Найвищий рівень кредитоспроможності"
+            )
+        elif score > 0.37:
+            return (
+                "ІІ категорія якості",
+                "A / BBB",
+                "Висока кредитоспроможність"
+            )
+        elif score > 0.19:
+            return (
+                "ІІІ категорія якості",
+                "BB / B",
+                "Спекулятивний рейтинг"
+            )
+        elif score > 0.11:
+            return (
+                "IV категорія якості",
+                "CCC",
+                "Можливий дефолт"
+            )
+        else:
+            return (
+                "V категорія якості",
+                "C / RD / D",
+                "Дефолт неминучий"
+            )
+
+    def get_weights(self):
+        weights = []
+
+        for i, entry in enumerate(self.weight_entries, start=1):
+            value = self.to_float(entry.get().strip())
+
+            if value is None or value < 1 or value > 10:
+                messagebox.showerror(
+                    "Помилка",
+                    f"Вага для K{i} має бути числом від 1 до 10."
+                )
+                return None
+
+            weights.append(value)
+
+        return weights
+
+    def calculate_k_values(self):
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
@@ -476,7 +618,7 @@ class BalanceReportApp:
         if not extra:
             conn.close()
             messagebox.showwarning("Увага", "Спочатку збережіть додаткову інформацію.")
-            return
+            return None
 
         v17, v18, v19_sk, v20_s, v21_k, v22_m = extra
 
@@ -498,37 +640,83 @@ class BalanceReportApp:
         f2_2515 = self.get_val(cursor, "Form2", "2515")
         f2_2520 = self.get_val(cursor, "Form2", "2520")
 
+        conn.close()
+
         costs = f2_2500 + f2_2505 + f2_2510 + f2_2515 + f2_2520
 
-        k1 = self.safe_div(f1_1160 + f1_1165, f1_1695)
-        k2 = self.safe_div(f1_1125 + f1_1155 + f1_1160 + f1_1165, f1_1695)
-        k3 = self.safe_div(f1_1195, f1_1695)
-        k4 = self.safe_div(f1_1525 + f1_1595 + f1_1695, f1_1495)
-        k5 = self.safe_div(f1_1495 - f1_1095, f1_1495)
-
-        k6 = self.safe_div(f2_2350, costs)
-        k7 = v18
-        k8 = self.safe_div(v19_sk, v20_s)
-
-        k9 = v17
-        k10 = self.safe_div(v21_k, v20_s)
-        k11 = self.safe_div(v22_m, v20_s)
-
-        self.results = [
-            ("G1", "K1 — Коефіцієнт миттєвої ліквідності", "(1160 + 1165) / 1695", k1),
-            ("G1", "K2 — Коефіцієнт поточної ліквідності", "(1125 + 1155 + 1160 + 1165) / 1695", k2),
-            ("G1", "K3 — Коефіцієнт загальної ліквідності", "1195 / 1695", k3),
-            ("G1", "K4 — Коефіцієнт фінансової незалежності", "(1525 + 1595 + 1695) / 1495", k4),
-            ("G1", "K5 — Коефіцієнт маневреності власних коштів", "(1495 - 1095) / 1495", k5),
-
-            ("G2", "K6 — Коефіцієнт рентабельності виробництва", "2350 / (2500 + 2505 + 2510 + 2515 + 2520)", k6),
-            ("G2", "K7 — Коефіцієнт діяльності минулих років", "V18", k7),
-            ("G2", "K8 — Коефіцієнт найбільшої суми повернутого кредиту", "V19 / V20", k8),
-
-            ("G3", "K9 — Термін існування підприємства", "V17", k9),
-            ("G3", "K10 — Питома вага коштів підприємства", "V21 / V20", k10),
-            ("G3", "K11 — Коефіцієнт власного ліквідного майна", "V22 / V20", k11)
+        k_values = [
+            self.safe_div(f1_1160 + f1_1165, f1_1695),
+            self.safe_div(f1_1125 + f1_1155 + f1_1160 + f1_1165, f1_1695),
+            self.safe_div(f1_1195, f1_1695),
+            self.safe_div(f1_1525 + f1_1595 + f1_1695, f1_1495),
+            self.safe_div(f1_1495 - f1_1095, f1_1495),
+            self.safe_div(f2_2350, costs),
+            v18,
+            self.safe_div(v19_sk, v20_s),
+            v17,
+            self.safe_div(v21_k, v20_s),
+            self.safe_div(v22_m, v20_s)
         ]
+
+        names = [
+            "Коефіцієнт миттєвої ліквідності",
+            "Коефіцієнт поточної ліквідності",
+            "Коефіцієнт загальної ліквідності",
+            "Коефіцієнт фінансової незалежності",
+            "Коефіцієнт маневреності власних коштів",
+            "Коефіцієнт рентабельності виробництва",
+            "Коефіцієнт діяльності минулих років",
+            "Коефіцієнт найбільшої суми повернутого кредиту",
+            "Термін існування підприємства",
+            "Питома вага коштів підприємства",
+            "Коефіцієнт власного ліквідного майна"
+        ]
+
+        return k_values, names
+
+    def calculate_creditworthiness(self):
+        calculated = self.calculate_k_values()
+
+        if calculated is None:
+            return
+
+        weights = self.get_weights()
+
+        if weights is None:
+            return
+
+        k_values, names = calculated
+
+        mu_values = [self.membership(value) for value in k_values]
+        norm_weights = self.normalize_weights(weights)
+
+        self.results = []
+
+        score = 0
+
+        for i in range(11):
+            part = round(mu_values[i] * norm_weights[i], 4)
+            score += part
+
+            self.results.append((
+                f"K{i + 1}",
+                names[i],
+                round(k_values[i], 4),
+                mu_values[i],
+                weights[i],
+                norm_weights[i],
+                part
+            ))
+
+        score = round(score, 4)
+        category, rating, level = self.get_rating(score)
+
+        self.credit_summary = {
+            "score": score,
+            "category": category,
+            "rating": rating,
+            "level": level
+        }
 
         for item in self.tree_res.get_children():
             self.tree_res.delete(item)
@@ -536,33 +724,70 @@ class BalanceReportApp:
         for row in self.results:
             self.tree_res.insert("", tk.END, values=row)
 
+        self.summary_label.config(
+            text=f"Агрегована оцінка: {score} | {category} | Рейтинг: {rating} | {level}"
+        )
+
+        self.save_credit_results_to_db()
+        self.notebook.select(4)
+
+        messagebox.showinfo("Готово", "Кредитоспроможність підприємства успішно оцінено.")
+
+    def save_credit_results_to_db(self):
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM credit_results")
+
+        for row in self.results:
+            _, indicator, k_value, mu, weight, norm_weight, part = row
+            cursor.execute("""
+                INSERT INTO credit_results (
+                    indicator, k_value, membership, weight, normalized_weight, result_part
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (indicator, str(k_value), mu, weight, norm_weight, part))
+
+        conn.commit()
         conn.close()
 
-        self.notebook.select(3)
-        messagebox.showinfo("Готово", "Фінансові показники K1–K11 успішно розраховано.")
-
     def export_results(self):
-        if not self.results:
-            messagebox.showwarning("Увага", "Спочатку розрахуйте показники.")
+        if not self.results or not self.credit_summary:
+            messagebox.showwarning("Увага", "Спочатку оцініть кредитоспроможність.")
             return
 
         try:
-            with open("Фінансові_Показники_K1_K11.csv", mode="w", newline="", encoding="utf-8-sig") as file:
+            with open("Кредитоспроможність_Підприємства.csv", mode="w", newline="", encoding="utf-8-sig") as file:
                 writer = csv.writer(file, delimiter=";")
-                writer.writerow(["Група", "Показник", "Формула", "Значення"])
+
+                writer.writerow([
+                    "Критерій",
+                    "Показник",
+                    "Значення K",
+                    "Функція належності μ(K)",
+                    "Вага",
+                    "Нормована вага",
+                    "Добуток"
+                ])
 
                 for row in self.results:
                     writer.writerow(row)
 
+                writer.writerow([])
+                writer.writerow(["Агрегована оцінка", self.credit_summary["score"]])
+                writer.writerow(["Категорія", self.credit_summary["category"]])
+                writer.writerow(["Рейтинг", self.credit_summary["rating"]])
+                writer.writerow(["Рівень", self.credit_summary["level"]])
+
             messagebox.showinfo(
                 "Експорт завершено",
-                "Результати збережено у файл Фінансові_Показники_K1_K11.csv"
+                "Результати збережено у файл Кредитоспроможність_Підприємства.csv"
             )
 
         except Exception as error:
             messagebox.showerror("Помилка експорту", str(error))
 
-    def test_database_and_export(self):
+    def test_program(self):
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
 
@@ -572,19 +797,23 @@ class BalanceReportApp:
         cursor.execute("SELECT COUNT(*) FROM additional_info")
         extra_count = cursor.fetchone()[0]
 
+        cursor.execute("SELECT COUNT(*) FROM credit_results")
+        credit_count = cursor.fetchone()[0]
+
         conn.close()
 
-        csv_exists = Path("Фінансові_Показники_K1_K11.csv").exists()
+        csv_exists = Path("Кредитоспроможність_Підприємства.csv").exists()
 
         messagebox.showinfo(
             "Тестування програми",
-            f"Записів у таблиці form_data: {form_count}\n"
-            f"Записів у таблиці additional_info: {extra_count}\n\n"
-            f"CSV з фінансовими показниками: {'створено' if csv_exists else 'не створено'}"
+            f"Записів у form_data: {form_count}\n"
+            f"Записів у additional_info: {extra_count}\n"
+            f"Записів у credit_results: {credit_count}\n\n"
+            f"CSV з результатами: {'створено' if csv_exists else 'не створено'}"
         )
 
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = BalanceReportApp(root)
+    app = CreditworthinessApp(root)
     root.mainloop()
